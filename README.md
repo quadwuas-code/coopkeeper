@@ -2,6 +2,8 @@
 
 CoopKeeper is a single-file backyard chicken flock manager. It is meant to be a free gift for the backyard flock community: a warm, practical notebook for birds, eggs, chores, hatches, health notes, money, and the little records that help a flock feel known.
 
+**[Open CoopKeeper](https://quadwuas-code.github.io/coopkeeper/)**
+
 ## Privacy Promise
 
 Everything lives in your browser.
