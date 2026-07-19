@@ -3799,9 +3799,6 @@ return logsForDate(date).reduce((total, log) => total + Number(log.count || 0), 
 function dailyLog(date) {
 return Store.get().eggLogs.find((log) => log.date === date && !log.birdId) || null;
 }
-function editableLog(date) {
-return dailyLog(date) || logsForDate(date)[0] || null;
-}
 function hasLog(date) {
 return logsForDate(date).length > 0;
 }
@@ -4162,13 +4159,10 @@ if (current && !Array.from(select.options).some((option) => option.value === cur
 select.value = "";
 }
 }
-function upsertLog(originalDate, values) {
-const existing = editableLog(originalDate);
-const targetExisting = editableLog(values.date);
-const existingId = existing ? existing.id : targetExisting ? targetExisting.id : null;
-if (existingId) {
+function saveLog(logId, values) {
+if (logId) {
 Store.update((draft) => {
-const log = draft.eggLogs.find((item) => item.id === existingId);
+const log = draft.eggLogs.find((item) => item.id === logId);
 if (!log) return false;
 log.date = values.date;
 log.count = values.count;
@@ -4181,8 +4175,102 @@ return "eggLogs";
 Store.addEggLog(values);
 }
 }
-function openLogSheet(date) {
-const existing = editableLog(date);
+function birdNameForLog(log) {
+if (!log.birdId) return "Whole flock";
+const bird = Store.get().birds.find((item) => item.id === log.birdId);
+return bird ? bird.name : "Bird no longer in roster";
+}
+function openDayManager(date) {
+const body = Util.el("div", { class: "stack" });
+let deletedEntryId = "";
+function renderManager() {
+const logs = logsForDate(date);
+const total = totalForDate(date);
+const entries = logs.map((log) => {
+const weight = log.sizeGrams === undefined ? "" : ` · ${Number(log.sizeGrams)} g`;
+const note = log.notes ? `<p class="card-copy">${Util.escapeHtml(log.notes)}</p>` : "";
+return `
+<article class="card stack" data-egg-entry-id="${Util.escapeHtml(log.id)}">
+<div class="flock-overview">
+<div>
+<h4 class="card-title">${Number(log.count || 0)} egg${Number(log.count || 0) === 1 ? "" : "s"}</h4>
+<p class="card-copy">${Util.escapeHtml(birdNameForLog(log))}${Util.escapeHtml(weight)}</p>
+</div>
+<span class="badge">Entry</span>
+</div>
+${note}
+<div class="form-actions">
+<button class="button button-secondary" type="button" data-edit-egg-entry="${Util.escapeHtml(log.id)}">Edit</button>
+<button class="button button-secondary" type="button" data-delete-egg-entry="${Util.escapeHtml(log.id)}">Delete</button>
+</div>
+</article>
+`;
+}).join("");
+body.innerHTML = `
+<div>
+<p class="card-copy">${total} egg${total === 1 ? "" : "s"} across ${logs.length} entr${logs.length === 1 ? "y" : "ies"}.</p>
+</div>
+<div class="stack" data-egg-entry-list>
+${entries || `<div class="empty-state"><p>No egg entries remain for this day.</p></div>`}
+</div>
+<div class="form-actions">
+${deletedEntryId && Store.canUndo() ? `<button class="button button-secondary" type="button" data-undo-egg-delete>Undo delete</button>` : ""}
+<button class="button button-secondary" type="button" data-sheet-close>Close</button>
+<button class="button button-primary" type="button" data-add-egg-entry>Add another entry</button>
+</div>
+`;
+}
+body.addEventListener("click", (event) => {
+if (event.target.closest("[data-undo-egg-delete]")) {
+deletedEntryId = "";
+Store.undo();
+return;
+}
+if (event.target.closest("[data-sheet-close]")) {
+Sheet.close();
+return;
+}
+if (event.target.closest("[data-add-egg-entry]")) {
+openLogSheet(date, null, true);
+return;
+}
+const edit = event.target.closest("[data-edit-egg-entry]");
+if (edit) {
+openLogSheet(date, edit.dataset.editEggEntry, true);
+return;
+}
+const remove = event.target.closest("[data-delete-egg-entry]");
+if (!remove) return;
+const log = Store.get().eggLogs.find((item) => item.id === remove.dataset.deleteEggEntry);
+if (!log) {
+openDayManager(date);
+return;
+}
+const count = Number(log.count || 0);
+if (!window.confirm(`Delete this ${count}-egg entry from ${Util.fmtDate(log.date)}?`)) return;
+deletedEntryId = log.id;
+Store.removeItem("eggLogs", log.id);
+});
+renderManager();
+const unsubscribe = Store.subscribe((event) => {
+if (Util.changedMatches(event, ["eggLogs"])) renderManager();
+});
+Sheet.open({
+title: date === Util.todayStr() ? "Today's egg entries" : `Egg entries · ${Util.fmtDate(date)}`,
+content: body,
+onClose: unsubscribe
+});
+}
+function openDateSheet(date) {
+const logs = logsForDate(date);
+if (logs.length > 1) {
+openDayManager(date);
+return;
+}
+openLogSheet(date, logs.length === 1 ? logs[0].id : null, false);
+}
+function openLogSheet(date, logId, returnToDay) {
+const existing = logId ? Store.get().eggLogs.find((item) => item.id === logId) || null : null;
 const body = Util.el("div");
 body.innerHTML = `
 <form class="stack" id="egg-log-form">
@@ -4217,6 +4305,7 @@ Notes
 </div>
 </fieldset>
 <div class="form-actions">
+${existing ? `<button class="button button-secondary" type="button" data-delete-current-egg>Delete</button>` : ""}
 <button class="button button-secondary" type="button" data-sheet-close>Cancel</button>
 <button class="button button-primary" type="submit">Save egg log</button>
 </div>
@@ -4226,36 +4315,48 @@ const form = Util.$("#egg-log-form", body);
 updateBirdPicker(form, existing ? existing.birdId : "");
 form.elements.date.addEventListener("change", () => updateBirdPicker(form));
 form.addEventListener("click", (event) => {
-if (event.target.closest("[data-sheet-close]")) Sheet.close();
+if (event.target.closest("[data-sheet-close]")) {
+if (returnToDay) openDayManager(date);
+else Sheet.close();
+return;
+}
+if (!event.target.closest("[data-delete-current-egg]") || !existing) return;
+const count = Number(existing.count || 0);
+if (!window.confirm(`Delete this ${count}-egg entry from ${Util.fmtDate(existing.date)}?`)) return;
+Store.removeItem("eggLogs", existing.id);
+Sheet.close();
 });
 form.addEventListener("submit", (event) => {
 event.preventDefault();
 const sizeValue = formValue(form, "sizeGrams");
-upsertLog(date, {
+const values = {
 date: formValue(form, "date") || date,
 count: Math.max(0, Math.floor(Number(formValue(form, "count")) || 0)),
 birdId: formValue(form, "birdId") || undefined,
 sizeGrams: sizeValue ? Number(sizeValue) : undefined,
 notes: formValue(form, "notes")
+};
+saveLog(existing ? existing.id : null, values);
+if (returnToDay) openDayManager(values.date);
+else Sheet.close();
 });
-Sheet.close();
-});
-Sheet.open({ title: date === Util.todayStr() ? "Edit today's eggs" : "Edit egg log", content: body });
+const action = existing ? "Edit" : "Add";
+Sheet.open({ title: `${action} egg entry`, content: body });
 }
 function bindEvents() {
 if (nodes.todayDetails) {
-nodes.todayDetails.addEventListener("click", () => openLogSheet(Util.todayStr()));
+nodes.todayDetails.addEventListener("click", () => openDateSheet(Util.todayStr()));
 }
 if (nodes.addPast) {
 nodes.addPast.addEventListener("click", () => {
-openLogSheet(addDays(Util.todayStr(), -1));
+openDateSheet(addDays(Util.todayStr(), -1));
 });
 }
 if (nodes.history) {
 nodes.history.addEventListener("click", (event) => {
 const row = event.target.closest("[data-egg-date]");
 if (!row) return;
-openLogSheet(row.dataset.eggDate);
+openDateSheet(row.dataset.eggDate);
 });
 }
 if (nodes.historyToggle) {
@@ -4282,7 +4383,7 @@ if (event.detail && event.detail.view === "eggs") render();
 */
 function openDate(date) {
 if (!Util.isViewVisible("eggs")) Router.showView("eggs");
-openLogSheet(date);
+openDateSheet(date);
 }
 /**
 * Return a DOM node for embedding today's shared + and - egg logger.
